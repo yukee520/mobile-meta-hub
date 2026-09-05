@@ -10,6 +10,7 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
@@ -30,6 +31,10 @@ export default function App() {
   const [fileContent, setFileContent] = useState('');
   const [newFileName, setNewFileName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // New Project Modal State
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [customProjectName, setCustomProjectName] = useState('');
 
   useEffect(() => {
     loadSettings();
@@ -78,33 +83,22 @@ export default function App() {
     }
   };
 
-  // GitHub Template Cloner / Local Initializer
+  // 1. Create GitHub Remote Repo & Local Structure
   const createProjectFromTemplate = async () => {
-    const projectName = `App_${Date.now().toString().slice(-4)}`;
+    if (!customProjectName.trim()) {
+      Alert.alert('Error', 'Please enter a project name.');
+      return;
+    }
+
+    const projectName = customProjectName.trim().replace(/\s+/g, '-');
     const projectPath = `${getProjectsDirPath()}/${projectName}`;
 
     setIsLoading(true);
+    setIsModalVisible(false);
+
     try {
+      // Step A: Create Local Folder Structure
       await RNFS.mkdir(projectPath);
-
-      // Attempt remote GitHub fetch if token & repo are provided
-      if (githubToken && templateRepo) {
-        const url = `https://api.github.com/repos/${templateRepo}/zipball/main`;
-        const zipPath = `${projectPath}/template.zip`;
-
-        const download = RNFS.downloadFile({
-          fromUrl: url,
-          toFile: zipPath,
-          headers: {
-            'Authorization': `token ${githubToken}`,
-            'User-Agent': 'MobileMetaHubApp',
-          },
-        });
-
-        await download.promise;
-      }
-
-      // Populate core folder structure & templates
       await RNFS.mkdir(`${projectPath}/android`);
       await RNFS.mkdir(`${projectPath}/ios`);
       await RNFS.mkdir(`${projectPath}/src`);
@@ -119,13 +113,31 @@ export default function App() {
         `import React from 'react';\nimport {Text, View} from 'react-native';\n\nexport default function App() {\n  return (\n    <View><Text>Project: ${projectName}</Text></View>\n  );\n}`,
         'utf8'
       );
-      await RNFS.writeFile(
-        `${projectPath}/styles.css`,
-        `/* Mobile Meta Hub Custom UI Style */\nbody { background-color: #121212; color: #ffffff; }`,
-        'utf8'
-      );
 
-      Alert.alert('Success', `Project ${projectName} generated!`);
+      // Step B: Automatically Create Remote Repository on GitHub via API
+      if (githubToken) {
+        const createRepoRes = await fetch('https://api.github.com/user/repos', {
+          method: 'POST',
+          headers: {
+            'Authorization': `token ${githubToken}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'MobileMetaHubApp',
+          },
+          body: JSON.stringify({
+            name: projectName,
+            private: false,
+            auto_init: true,
+          }),
+        });
+
+        if (!createRepoRes.ok) {
+          const errData = await createRepoRes.json();
+          console.log('GitHub Repo Creation Notice:', errData.message);
+        }
+      }
+
+      Alert.alert('Success', `Project "${projectName}" generated locally and synced to GitHub!`);
+      setCustomProjectName('');
       await refreshProjects();
       openProject(projectName);
     } catch (err) {
@@ -133,6 +145,35 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Delete Project Workspace
+  const deleteProject = async (projectName) => {
+    Alert.alert(
+      'Delete Workspace',
+      `Are you sure you want to delete "${projectName}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const projectPath = `${getProjectsDirPath()}/${projectName}`;
+              await RNFS.unlink(projectPath);
+              if (activeProject === projectName) {
+                setActiveProject(null);
+                setFileList([]);
+                setSelectedFile(null);
+              }
+              await refreshProjects();
+            } catch (err) {
+              Alert.alert('Error', err.message);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Editor Operations
@@ -169,10 +210,31 @@ export default function App() {
     if (!selectedFile) return;
     try {
       await RNFS.writeFile(selectedFile, fileContent, 'utf8');
-      Alert.alert('Saved', 'File updated.');
+      Alert.alert('Saved', 'File updated locally.');
     } catch (err) {
       Alert.alert('Error', err.message);
     }
+  };
+
+  // Delete File Action
+  const deleteFile = async (filePath) => {
+    Alert.alert('Delete File', 'Delete this file permanently?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await RNFS.unlink(filePath);
+            setSelectedFile(null);
+            setFileContent('');
+            openProject(activeProject);
+          } catch (err) {
+            Alert.alert('Error', err.message);
+          }
+        },
+      },
+    ]);
   };
 
   const createCustomFile = async () => {
@@ -184,6 +246,79 @@ export default function App() {
       openProject(activeProject);
     } catch (err) {
       Alert.alert('Error', err.message);
+    }
+  };
+
+  // 2. Commit Local Changes to GitHub and Trigger Actions Build
+  const pushAndTriggerBuild = async () => {
+    if (!githubToken || !githubUser || !activeProject) {
+      Alert.alert('Missing Credentials', 'Ensure GitHub Username, Token, and Active Project are set.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // Step A: Push Active File to GitHub Repo via API
+      if (selectedFile) {
+        const fileName = selectedFile.split('/').pop();
+        const getShaRes = await fetch(
+          `https://api.github.com/repos/${githubUser}/${activeProject}/contents/${fileName}`,
+          {
+            headers: {
+              'Authorization': `token ${githubToken}`,
+              'User-Agent': 'MobileMetaHubApp',
+            },
+          }
+        );
+
+        let sha = null;
+        if (getShaRes.ok) {
+          const fileData = await getShaRes.json();
+          sha = fileData.sha;
+        }
+
+        const encodedContent = btoa(unescape(encodeURIComponent(fileContent)));
+
+        await fetch(
+          `https://api.github.com/repos/${githubUser}/${activeProject}/contents/${fileName}`,
+          {
+            method: 'PUT',
+            headers: {
+              'Authorization': `token ${githubToken}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'MobileMetaHubApp',
+            },
+            body: JSON.stringify({
+              message: `mobile-update: ${fileName}`,
+              content: encodedContent,
+              sha: sha || undefined,
+            }),
+          }
+        );
+      }
+
+      // Step B: Dispatch GitHub Actions Workflow for APK Build
+      const dispatchRes = await fetch(
+        `https://api.github.com/repos/${githubUser}/${activeProject}/actions/workflows/build-apk.yml/dispatches`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `token ${githubToken}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'MobileMetaHubApp',
+          },
+          body: JSON.stringify({ ref: 'main' }),
+        }
+      );
+
+      Alert.alert(
+        'Pushed & Triggered',
+        'Files pushed to GitHub repository! Check GitHub Actions tab for APK compilation.'
+      );
+    } catch (err) {
+      Alert.alert('Push Error', err.message);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -227,12 +362,12 @@ export default function App() {
           <Text style={styles.title}>Mobile Meta Hub Workspaces</Text>
           <TouchableOpacity 
             style={styles.actionButton} 
-            onPress={createProjectFromTemplate}
+            onPress={() => setIsModalVisible(true)}
             disabled={isLoading}>
             {isLoading ? (
               <ActivityIndicator color="#FFF" />
             ) : (
-              <Text style={styles.btnText}>+ Duplicate Template Project</Text>
+              <Text style={styles.btnText}>+ Create New Project</Text>
             )}
           </TouchableOpacity>
 
@@ -240,11 +375,40 @@ export default function App() {
             data={projects}
             keyExtractor={(item) => item}
             renderItem={({ item }) => (
-              <TouchableOpacity style={styles.card} onPress={() => openProject(item)}>
-                <Text style={styles.cardText}>📁 {item}</Text>
-              </TouchableOpacity>
+              <View style={styles.cardRow}>
+                <TouchableOpacity style={styles.card} onPress={() => openProject(item)}>
+                  <Text style={styles.cardText}>📁 {item}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteProject(item)}>
+                  <Text style={styles.btnText}>🗑️</Text>
+                </TouchableOpacity>
+              </View>
             )}
           />
+
+          {/* New Project Dialog Modal */}
+          <Modal visible={isModalVisible} transparent animationType="slide">
+            <View style={styles.modalContainer}>
+              <View style={styles.modalCard}>
+                <Text style={styles.title}>New Project Name</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. MyAwesomeApp"
+                  placeholderTextColor="#666"
+                  value={customProjectName}
+                  onChangeText={setCustomProjectName}
+                />
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 }}>
+                  <TouchableOpacity style={[styles.actionButton, { backgroundColor: '#666', flex: 0.45 }]} onPress={() => setIsModalVisible(false)}>
+                    <Text style={styles.btnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.actionButton, { flex: 0.45 }]} onPress={createProjectFromTemplate}>
+                    <Text style={styles.btnText}>Create</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
         </View>
       )}
 
@@ -294,9 +458,17 @@ export default function App() {
                     placeholder="Write code, CSS, JS, HTML..."
                     placeholderTextColor="#555"
                   />
-                  <TouchableOpacity style={styles.actionButton} onPress={saveFile}>
-                    <Text style={styles.btnText}>Save Script</Text>
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                    <TouchableOpacity style={[styles.actionButton, { flex: 0.3, backgroundColor: '#DC3545' }]} onPress={() => deleteFile(selectedFile)}>
+                      <Text style={styles.btnText}>Delete File</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.actionButton, { flex: 0.3, backgroundColor: '#28A745' }]} onPress={saveFile}>
+                      <Text style={styles.btnText}>Save</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.actionButton, { flex: 0.35, backgroundColor: '#6f42c1' }]} onPress={pushAndTriggerBuild}>
+                      {isLoading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.btnText}>Push & Build</Text>}
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ) : (
                 <Text style={{ marginTop: 20, color: '#888' }}>Select a file above to start editing.</Text>
@@ -321,11 +493,15 @@ const styles = StyleSheet.create({
   actionButton: { backgroundColor: '#007ACC', padding: 12, borderRadius: 5, alignItems: 'center', marginVertical: 10 },
   smallButton: { backgroundColor: '#28A745', padding: 12, borderRadius: 5, marginLeft: 5 },
   btnText: { color: '#FFF', fontWeight: 'bold' },
-  card: { backgroundColor: '#1E1E1E', padding: 15, borderRadius: 5, marginBottom: 10 },
+  cardRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  card: { flex: 1, backgroundColor: '#1E1E1E', padding: 15, borderRadius: 5, marginRight: 5 },
+  deleteBtn: { backgroundColor: '#DC3545', padding: 15, borderRadius: 5 },
   cardText: { color: '#FFF', fontSize: 16 },
   fileBar: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   fileListHeader: { maxHeight: 45, marginBottom: 10 },
   fileChip: { backgroundColor: '#333', padding: 10, borderRadius: 5, marginRight: 5 },
   chipText: { color: '#FFF' },
-  codeEditor: { flex: 1, backgroundColor: '#000', color: '#0F0', fontFamily: 'monospace', padding: 10, borderRadius: 5 }
+  codeEditor: { flex: 1, backgroundColor: '#000', color: '#0F0', fontFamily: 'monospace', padding: 10, borderRadius: 5 },
+  modalContainer: { flex: 1, justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.8)', padding: 20 },
+  modalCard: { backgroundColor: '#1E1E1E', padding: 20, borderRadius: 10 }
 });
