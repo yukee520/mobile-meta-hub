@@ -32,11 +32,11 @@ jobs:
       - name: Generate Native Android Directory
         run: npx expo prebuild --platform android --clean
 
-      - name: Build Debug APK with Offline Bundle
+      - name: Build Standalone Debug APK with Offline Bundle
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew :app:createDebugExpoProgressBundle :app:assembleDebug --no-daemon
+          ./gradlew :app:bundleDebugJsAndAssets :app:assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
