@@ -3,6 +3,7 @@
     "name": "Mobile Meta Hub",
     "slug": "mobile-meta-hub",
     "version": "1.0.0",
+    "entryPoint": "./index.js",
     "orientation": "portrait",
     "android": {
       "package": "com.mobilemetahub.app"
