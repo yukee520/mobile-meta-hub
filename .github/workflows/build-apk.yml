@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Pure React Native APK
 
 on:
   push:
@@ -29,14 +29,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate Native Android Directory
-        run: npx expo prebuild --platform android --clean
+      - name: Bundle JS Offline Assets
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
 
-      - name: Build Standalone Debug APK with Offline Bundle
+      - name: Build Standalone Debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew :app:bundleDebugJsAndAssets :app:assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
