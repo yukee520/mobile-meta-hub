@@ -5,7 +5,12 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "start,android,ios": [
+      "react-native start",
+      "react-native run-android",
+      "react-native run-ios"
+    ]
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "1.23.1",
