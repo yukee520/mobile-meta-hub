@@ -32,14 +32,14 @@ jobs:
       - name: Generate Native Android Directory
         run: npx expo prebuild --platform android --clean
 
-      - name: Build Standalone Offline Debug APK
+      - name: Build Unsigned Release APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug -Preflect.dev=false --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
