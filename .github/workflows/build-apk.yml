@@ -32,6 +32,10 @@ jobs:
       - name: Generate Native Android Directory
         run: npx expo prebuild --platform android --clean
 
+      - name: Bump Gradle Wrapper Version
+        run: |
+          sed -i 's/gradle-9.3.1-bin.zip/gradle-9.4.1-bin.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+
       - name: Build Android Debug APK
         run: |
           cd android
