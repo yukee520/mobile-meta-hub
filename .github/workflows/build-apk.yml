@@ -29,18 +29,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate Native Android Directory
+      - name: Generate Android Native Project
         run: npx expo prebuild --platform android --clean
-
-      - name: Bump Gradle Wrapper Version
-        run: |
-          sed -i 's/gradle-9.3.1-bin.zip/gradle-9.4.1-bin.zip/g' android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Build Android Debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --warning-mode=none
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
