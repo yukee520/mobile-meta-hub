@@ -32,21 +32,11 @@ jobs:
       - name: Generate Native Android Directory
         run: npx expo prebuild --platform android --clean
 
-      - name: Bundle JS Assets for Offline APK
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res
-
-      - name: Build Android Debug APK
+      - name: Build Standalone Offline Debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug -Preflect.dev=false --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
