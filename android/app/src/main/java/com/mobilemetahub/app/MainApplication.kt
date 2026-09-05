@@ -20,7 +20,7 @@ class MainApplication : Application(), ReactApplication {
         override fun getUseDeveloperSupport(): Boolean = false
 
         override val isNewArchEnabled: Boolean = false
-        override val isHermesEnabled: Boolean = true
+        override val isHermesEnabled: Boolean = false
       }
 
   override fun onCreate() {
