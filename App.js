@@ -41,7 +41,6 @@ export default function App() {
     refreshProjects();
   }, []);
 
-  // Settings Storage
   const loadSettings = async () => {
     try {
       const user = await AsyncStorage.getItem('GH_USER');
@@ -66,7 +65,6 @@ export default function App() {
     }
   };
 
-  // Directory Management
   const getProjectsDirPath = () => `${RNFS.DocumentDirectoryPath}/projects`;
 
   const refreshProjects = async () => {
@@ -83,7 +81,7 @@ export default function App() {
     }
   };
 
-  // Create Project & Sync Remote GitHub Repo
+  // Generate New Repo directly from GitHub Template Endpoint
   const createProjectFromTemplate = async () => {
     if (!customProjectName.trim()) {
       Alert.alert('Error', 'Please enter a project name.');
@@ -97,44 +95,48 @@ export default function App() {
     setIsModalVisible(false);
 
     try {
+      // Step A: Generate Remote Repository from GitHub Template Endpoint
+      if (githubToken && templateRepo) {
+        const cleanTemplateRepo = templateRepo.trim(); // Format: owner/repo
+        const generateRes = await fetch(
+          `https://api.github.com/repos/${cleanTemplateRepo}/generate`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `token ${githubToken}`,
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'User-Agent': 'MobileMetaHubApp',
+            },
+            body: JSON.stringify({
+              name: projectName,
+              private: false,
+              include_all_branches: false,
+            }),
+          }
+        );
+
+        if (!generateRes.ok) {
+          const errData = await generateRes.json();
+          throw new Error(`GitHub Template Error: ${errData.message || 'Failed to duplicate template repo.'}`);
+        }
+      } else {
+        Alert.alert('Notice', 'No template repository or GitHub Token found in Settings. Creating local folder structure only.');
+      }
+
+      // Step B: Initialize Local Directory & Base Files
       await RNFS.mkdir(projectPath);
       await RNFS.mkdir(`${projectPath}/android`);
       await RNFS.mkdir(`${projectPath}/ios`);
       await RNFS.mkdir(`${projectPath}/src`);
 
       await RNFS.writeFile(
-        `${projectPath}/index.js`,
-        `import {AppRegistry} from 'react-native';\nimport App from './App';\nimport {name as appName} from './app.json';\n\nAppRegistry.registerComponent(appName, () => App);`,
-        'utf8'
-      );
-      await RNFS.writeFile(
         `${projectPath}/App.js`,
         `import React from 'react';\nimport {Text, View} from 'react-native';\n\nexport default function App() {\n  return (\n    <View><Text>Project: ${projectName}</Text></View>\n  );\n}`,
         'utf8'
       );
 
-      if (githubToken) {
-        const createRepoRes = await fetch('https://api.github.com/user/repos', {
-          method: 'POST',
-          headers: {
-            'Authorization': `token ${githubToken}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'MobileMetaHubApp',
-          },
-          body: JSON.stringify({
-            name: projectName,
-            private: false,
-            auto_init: true,
-          }),
-        });
-
-        if (!createRepoRes.ok) {
-          const errData = await createRepoRes.json();
-          console.log('GitHub Repo Creation Notice:', errData.message);
-        }
-      }
-
-      Alert.alert('Success', `Project "${projectName}" generated locally and synced to GitHub!`);
+      Alert.alert('Success', `Repository "${projectName}" generated directly from template "${templateRepo}"!`);
       setCustomProjectName('');
       await refreshProjects();
       openProject(projectName);
@@ -145,7 +147,6 @@ export default function App() {
     }
   };
 
-  // Delete Local Folder + Remote GitHub Repository
   const deleteProject = async (projectName) => {
     Alert.alert(
       'Delete Workspace',
@@ -158,7 +159,6 @@ export default function App() {
           onPress: async () => {
             setIsLoading(true);
             try {
-              // 1. Delete Remote GitHub Repository via REST API
               if (githubToken && githubUser) {
                 const ghRes = await fetch(
                   `https://api.github.com/repos/${githubUser}/${projectName}`,
@@ -171,14 +171,11 @@ export default function App() {
                   }
                 );
 
-                if (ghRes.status === 204) {
-                  console.log('GitHub repository successfully deleted.');
-                } else if (ghRes.status === 403) {
-                  Alert.alert('GitHub Warning', 'Failed to delete remote repo. Ensure your Personal Access Token has the "delete_repo" permission.');
+                if (ghRes.status === 403) {
+                  Alert.alert('GitHub Warning', 'Failed to delete remote repo. Ensure your PAT has the "delete_repo" permission.');
                 }
               }
 
-              // 2. Delete Local Directory
               const projectPath = `${getProjectsDirPath()}/${projectName}`;
               await RNFS.unlink(projectPath);
 
@@ -201,7 +198,6 @@ export default function App() {
     );
   };
 
-  // Editor Operations
   const openProject = async (projectName) => {
     setActiveProject(projectName);
     const projectPath = `${getProjectsDirPath()}/${projectName}`;
