@@ -18,12 +18,10 @@ import RNFS from 'react-native-fs';
 export default function App() {
   const [currentTab, setCurrentTab] = useState('projects');
   
-  // Settings Credentials State
   const [githubUser, setGithubUser] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [templateRepo, setTemplateRepo] = useState('');
 
-  // Project & File System State
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
   const [fileList, setFileList] = useState([]);
@@ -32,7 +30,6 @@ export default function App() {
   const [newFileName, setNewFileName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // New Project Modal State
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [customProjectName, setCustomProjectName] = useState('');
 
@@ -81,7 +78,6 @@ export default function App() {
     }
   };
 
-  // Generate New Repo directly from GitHub Template Endpoint
   const createProjectFromTemplate = async () => {
     if (!customProjectName.trim()) {
       Alert.alert('Error', 'Please enter a project name.');
@@ -95,9 +91,8 @@ export default function App() {
     setIsModalVisible(false);
 
     try {
-      // Step A: Generate Remote Repository from GitHub Template Endpoint
       if (githubToken && templateRepo) {
-        const cleanTemplateRepo = templateRepo.trim(); // Format: owner/repo
+        const cleanTemplateRepo = templateRepo.trim();
         const generateRes = await fetch(
           `https://api.github.com/repos/${cleanTemplateRepo}/generate`,
           {
@@ -120,23 +115,37 @@ export default function App() {
           const errData = await generateRes.json();
           throw new Error(`GitHub Template Error: ${errData.message || 'Failed to duplicate template repo.'}`);
         }
-      } else {
-        Alert.alert('Notice', 'No template repository or GitHub Token found in Settings. Creating local folder structure only.');
       }
 
-      // Step B: Initialize Local Directory & Base Files
       await RNFS.mkdir(projectPath);
       await RNFS.mkdir(`${projectPath}/android`);
-      await RNFS.mkdir(`${projectPath}/ios`);
-      await RNFS.mkdir(`${projectPath}/src`);
 
+      // Write required Metro Config & Index Entry Files
       await RNFS.writeFile(
-        `${projectPath}/App.js`,
-        `import React from 'react';\nimport {Text, View} from 'react-native';\n\nexport default function App() {\n  return (\n    <View><Text>Project: ${projectName}</Text></View>\n  );\n}`,
+        `${projectPath}/metro.config.js`,
+        `const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');\nconst config = {};\nmodule.exports = mergeConfig(getDefaultConfig(__dirname), config);`,
         'utf8'
       );
 
-      Alert.alert('Success', `Repository "${projectName}" generated directly from template "${templateRepo}"!`);
+      await RNFS.writeFile(
+        `${projectPath}/index.js`,
+        `import {AppRegistry} from 'react-native';\nimport App from './App';\nimport {name as appName} from './app.json';\n\nAppRegistry.registerComponent(appName, () => App);`,
+        'utf8'
+      );
+
+      await RNFS.writeFile(
+        `${projectPath}/app.json`,
+        JSON.stringify({ name: projectName, displayName: projectName }),
+        'utf8'
+      );
+
+      await RNFS.writeFile(
+        `${projectPath}/App.js`,
+        `import React from 'react';\nimport {Text, View, StyleSheet} from 'react-native';\n\nexport default function App() {\n  return (\n    <View style={styles.container}>\n      <Text style={styles.text}>Workspace: ${projectName}</Text>\n    </View>\n  );\n}\n\nconst styles = StyleSheet.create({\n  container: { flex: 1, backgroundColor: '#121212', justifyContent: 'center', alignItems: 'center' },\n  text: { color: '#007ACC', fontSize: 20, fontWeight: 'bold' }\n});`,
+        'utf8'
+      );
+
+      Alert.alert('Success', `Repository "${projectName}" generated with Metro config!`);
       setCustomProjectName('');
       await refreshProjects();
       openProject(projectName);
@@ -160,7 +169,7 @@ export default function App() {
             setIsLoading(true);
             try {
               if (githubToken && githubUser) {
-                const ghRes = await fetch(
+                await fetch(
                   `https://api.github.com/repos/${githubUser}/${projectName}`,
                   {
                     method: 'DELETE',
@@ -170,10 +179,6 @@ export default function App() {
                     },
                   }
                 );
-
-                if (ghRes.status === 403) {
-                  Alert.alert('GitHub Warning', 'Failed to delete remote repo. Ensure your PAT has the "delete_repo" permission.');
-                }
               }
 
               const projectPath = `${getProjectsDirPath()}/${projectName}`;
@@ -186,7 +191,7 @@ export default function App() {
               }
 
               await refreshProjects();
-              Alert.alert('Deleted', `Workspace "${projectName}" removed locally and from GitHub.`);
+              Alert.alert('Deleted', `Workspace "${projectName}" removed.`);
             } catch (err) {
               Alert.alert('Error', err.message);
             } finally {
@@ -277,44 +282,61 @@ export default function App() {
 
     setIsLoading(true);
     try {
+      // Step A: Auto-push metro.config.js, index.js, app.json, and active file
+      const projectPath = `${getProjectsDirPath()}/${activeProject}`;
+      const filesToPush = ['metro.config.js', 'index.js', 'app.json'];
+      
       if (selectedFile) {
-        const fileName = selectedFile.split('/').pop();
-        const getShaRes = await fetch(
-          `https://api.github.com/repos/${githubUser}/${activeProject}/contents/${fileName}`,
-          {
-            headers: {
-              'Authorization': `token ${githubToken}`,
-              'User-Agent': 'MobileMetaHubApp',
-            },
-          }
-        );
-
-        let sha = null;
-        if (getShaRes.ok) {
-          const fileData = await getShaRes.json();
-          sha = fileData.sha;
+        const selectedFileName = selectedFile.split('/').pop();
+        if (!filesToPush.includes(selectedFileName)) {
+          filesToPush.push(selectedFileName);
         }
-
-        const encodedContent = btoa(unescape(encodeURIComponent(fileContent)));
-
-        await fetch(
-          `https://api.github.com/repos/${githubUser}/${activeProject}/contents/${fileName}`,
-          {
-            method: 'PUT',
-            headers: {
-              'Authorization': `token ${githubToken}`,
-              'Content-Type': 'application/json',
-              'User-Agent': 'MobileMetaHubApp',
-            },
-            body: JSON.stringify({
-              message: `mobile-update: ${fileName}`,
-              content: encodedContent,
-              sha: sha || undefined,
-            }),
-          }
-        );
       }
 
+      for (const fileName of filesToPush) {
+        const fullFilePath = `${projectPath}/${fileName}`;
+        const fileExists = await RNFS.exists(fullFilePath);
+
+        if (fileExists) {
+          const content = await RNFS.readFile(fullFilePath, 'utf8');
+          const getShaRes = await fetch(
+            `https://api.github.com/repos/${githubUser}/${activeProject}/contents/${fileName}`,
+            {
+              headers: {
+                'Authorization': `token ${githubToken}`,
+                'User-Agent': 'MobileMetaHubApp',
+              },
+            }
+          );
+
+          let sha = null;
+          if (getShaRes.ok) {
+            const fileData = await getShaRes.json();
+            sha = fileData.sha;
+          }
+
+          const encodedContent = btoa(unescape(encodeURIComponent(content)));
+
+          await fetch(
+            `https://api.github.com/repos/${githubUser}/${activeProject}/contents/${fileName}`,
+            {
+              method: 'PUT',
+              headers: {
+                'Authorization': `token ${githubToken}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'MobileMetaHubApp',
+              },
+              body: JSON.stringify({
+                message: `sync: ${fileName}`,
+                content: encodedContent,
+                sha: sha || undefined,
+              }),
+            }
+          );
+        }
+      }
+
+      // Step B: Dispatch Action Workflow
       await fetch(
         `https://api.github.com/repos/${githubUser}/${activeProject}/actions/workflows/build-apk.yml/dispatches`,
         {
@@ -328,10 +350,7 @@ export default function App() {
         }
       );
 
-      Alert.alert(
-        'Pushed & Triggered',
-        'Files pushed to GitHub repository! Check GitHub Actions tab for APK compilation.'
-      );
+      Alert.alert('Pushed & Triggered', 'Metro config and project files synced to GitHub. Check GitHub Actions tab!');
     } catch (err) {
       Alert.alert('Push Error', err.message);
     } finally {
