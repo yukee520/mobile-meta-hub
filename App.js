@@ -83,7 +83,7 @@ export default function App() {
     }
   };
 
-  // 1. Create GitHub Remote Repo & Local Structure
+  // Create Project & Sync Remote GitHub Repo
   const createProjectFromTemplate = async () => {
     if (!customProjectName.trim()) {
       Alert.alert('Error', 'Please enter a project name.');
@@ -97,7 +97,6 @@ export default function App() {
     setIsModalVisible(false);
 
     try {
-      // Step A: Create Local Folder Structure
       await RNFS.mkdir(projectPath);
       await RNFS.mkdir(`${projectPath}/android`);
       await RNFS.mkdir(`${projectPath}/ios`);
@@ -114,7 +113,6 @@ export default function App() {
         'utf8'
       );
 
-      // Step B: Automatically Create Remote Repository on GitHub via API
       if (githubToken) {
         const createRepoRes = await fetch('https://api.github.com/user/repos', {
           method: 'POST',
@@ -147,28 +145,55 @@ export default function App() {
     }
   };
 
-  // Delete Project Workspace
+  // Delete Local Folder + Remote GitHub Repository
   const deleteProject = async (projectName) => {
     Alert.alert(
       'Delete Workspace',
-      `Are you sure you want to delete "${projectName}"?`,
+      `Delete "${projectName}" locally and permanently remove its repository from GitHub?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Delete',
+          text: 'Delete Everywhere',
           style: 'destructive',
           onPress: async () => {
+            setIsLoading(true);
             try {
+              // 1. Delete Remote GitHub Repository via REST API
+              if (githubToken && githubUser) {
+                const ghRes = await fetch(
+                  `https://api.github.com/repos/${githubUser}/${projectName}`,
+                  {
+                    method: 'DELETE',
+                    headers: {
+                      'Authorization': `token ${githubToken}`,
+                      'User-Agent': 'MobileMetaHubApp',
+                    },
+                  }
+                );
+
+                if (ghRes.status === 204) {
+                  console.log('GitHub repository successfully deleted.');
+                } else if (ghRes.status === 403) {
+                  Alert.alert('GitHub Warning', 'Failed to delete remote repo. Ensure your Personal Access Token has the "delete_repo" permission.');
+                }
+              }
+
+              // 2. Delete Local Directory
               const projectPath = `${getProjectsDirPath()}/${projectName}`;
               await RNFS.unlink(projectPath);
+
               if (activeProject === projectName) {
                 setActiveProject(null);
                 setFileList([]);
                 setSelectedFile(null);
               }
+
               await refreshProjects();
+              Alert.alert('Deleted', `Workspace "${projectName}" removed locally and from GitHub.`);
             } catch (err) {
               Alert.alert('Error', err.message);
+            } finally {
+              setIsLoading(false);
             }
           },
         },
@@ -216,7 +241,6 @@ export default function App() {
     }
   };
 
-  // Delete File Action
   const deleteFile = async (filePath) => {
     Alert.alert('Delete File', 'Delete this file permanently?', [
       { text: 'Cancel', style: 'cancel' },
@@ -249,7 +273,6 @@ export default function App() {
     }
   };
 
-  // 2. Commit Local Changes to GitHub and Trigger Actions Build
   const pushAndTriggerBuild = async () => {
     if (!githubToken || !githubUser || !activeProject) {
       Alert.alert('Missing Credentials', 'Ensure GitHub Username, Token, and Active Project are set.');
@@ -258,7 +281,6 @@ export default function App() {
 
     setIsLoading(true);
     try {
-      // Step A: Push Active File to GitHub Repo via API
       if (selectedFile) {
         const fileName = selectedFile.split('/').pop();
         const getShaRes = await fetch(
@@ -297,8 +319,7 @@ export default function App() {
         );
       }
 
-      // Step B: Dispatch GitHub Actions Workflow for APK Build
-      const dispatchRes = await fetch(
+      await fetch(
         `https://api.github.com/repos/${githubUser}/${activeProject}/actions/workflows/build-apk.yml/dispatches`,
         {
           method: 'POST',
@@ -324,7 +345,6 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Tab Navigation */}
       <View style={styles.navBar}>
         <TouchableOpacity style={styles.navButton} onPress={() => setCurrentTab('projects')}>
           <Text style={styles.navText}>Projects</Text>
@@ -337,7 +357,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Settings Tab */}
       {currentTab === 'settings' && (
         <ScrollView style={styles.tabContent}>
           <Text style={styles.title}>GitHub Configuration</Text>
@@ -356,7 +375,6 @@ export default function App() {
         </ScrollView>
       )}
 
-      {/* Projects Dashboard */}
       {currentTab === 'projects' && (
         <View style={styles.tabContent}>
           <Text style={styles.title}>Mobile Meta Hub Workspaces</Text>
@@ -386,7 +404,6 @@ export default function App() {
             )}
           />
 
-          {/* New Project Dialog Modal */}
           <Modal visible={isModalVisible} transparent animationType="slide">
             <View style={styles.modalContainer}>
               <View style={styles.modalCard}>
@@ -412,7 +429,6 @@ export default function App() {
         </View>
       )}
 
-      {/* Code & UI Editor Screen */}
       {currentTab === 'editor' && (
         <View style={styles.tabContent}>
           <Text style={styles.title}>
@@ -421,7 +437,6 @@ export default function App() {
 
           {activeProject && (
             <>
-              {/* File Creator Bar */}
               <View style={styles.fileBar}>
                 <TextInput
                   style={[styles.input, { flex: 1, marginBottom: 0 }]}
@@ -435,7 +450,6 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              {/* Directory Bar */}
               <ScrollView horizontal style={styles.fileListHeader}>
                 {fileList.map(file => (
                   <TouchableOpacity 
@@ -447,7 +461,6 @@ export default function App() {
                 ))}
               </ScrollView>
 
-              {/* Code Editor */}
               {selectedFile ? (
                 <View style={{ flex: 1 }}>
                   <TextInput
