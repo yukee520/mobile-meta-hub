@@ -3,316 +3,441 @@ import {
   SafeAreaView,
   View,
   Text,
-  TextInput,
   TouchableOpacity,
+  TextInput,
+  FlatList,
   ScrollView,
   StyleSheet,
   Alert,
   ActivityIndicator,
 } from 'react-native';
 
-const GITHUB_USERNAME = 'yukee520';
-const TEMPLATE_REPO = 'mobile-meta-hub-template';
-
-const DEFAULT_FILES = {
-  'App.js': `import React from 'react';
-import { SafeAreaView, Text, StyleSheet } from 'react-native';
-
 export default function App() {
-  return (
-    <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>Complex App Architecture</Text>
-    </SafeAreaView>
-  );
-}
+  // Navigation State
+  const [activeTab, setActiveTab] = useState('projects'); // 'projects' | 'editor' | 'settings'
 
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  title: { fontSize: 20, fontWeight: 'bold' }
-});`,
-  'package.json': `{
-  "name": "App",
-  "version": "0.0.1",
-  "private": true,
-  "scripts": {
-    "android": "react-native run-android",
-    "start": "react-native start"
-  },
-  "dependencies": {
-    "react": "18.3.1",
-    "react-native": "0.76.5"
-  }
-}`
-};
-
-export default function App() {
+  // Settings State
   const [githubToken, setGithubToken] = useState('');
-  const [newRepoName, setNewRepoName] = useState('');
-  const [activeRepo, setActiveRepo] = useState('');
-  
-  // File System State
-  const [files, setFiles] = useState(DEFAULT_FILES);
-  const [activeFilePath, setActiveFilePath] = useState('App.js');
-  const [newFilePath, setNewFilePath] = useState('');
+  const [templateRepo, setTemplateRepo] = useState('username/mobile-meta-hub-template');
 
-  const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState('');
+  // Projects State
+  const [projects, setProjects] = useState([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
 
-  // 1. CREATE NEW REPO FROM TEMPLATE
-  const handleCreateNewProject = async () => {
-    if (!githubToken.trim() || !newRepoName.trim()) {
-      Alert.alert('Error', 'Please provide both GitHub Token and Project Name.');
+  // Editor State
+  const [selectedRepo, setSelectedRepo] = useState('');
+  const [filePath, setFilePath] = useState('App.js');
+  const [fileContent, setFileContent] = useState('');
+  const [fileSha, setFileSha] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  // --- API CALLS ---
+
+  // Fetch GitHub Repositories for the User
+  const fetchUserRepos = async () => {
+    if (!githubToken) {
+      Alert.alert('Configuration Error', 'Please enter your GitHub Access Token in Settings first.');
       return;
     }
-
-    const cleanRepoName = newRepoName.trim().replace(/\s+/g, '-');
-    setLoading(true);
-    setStatusText(`Cloning template to '${cleanRepoName}'...`);
-
+    setLoadingProjects(true);
     try {
-      const res = await fetch(
-        `https://api.github.com/repos/${GITHUB_USERNAME}/${TEMPLATE_REPO}/generate`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `token ${githubToken.trim()}`,
-            Accept: 'application/vnd.github+json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            owner: GITHUB_USERNAME,
-            name: cleanRepoName,
-            private: false,
-          }),
-        }
-      );
-
-      const data = await res.json();
-      if (res.status === 201) {
-        setActiveRepo(cleanRepoName);
-        Alert.alert('Success', `Repository '${cleanRepoName}' created!`);
+      const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
+        headers: {
+          Authorization: `token ${githubToken}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      });
+      const data = await response.json();
+      if (Array.isArray(data)) {
+        setProjects(data);
       } else {
-        Alert.alert('Error', data.message || 'Failed to create repo.');
+        Alert.alert('Error Fetching Projects', data.message || 'Failed to retrieve projects.');
       }
-    } catch (err) {
-      Alert.alert('Network Error', err.message);
+    } catch (error) {
+      Alert.alert('Network Error', error.message);
     } finally {
-      setLoading(false);
-      setStatusText('');
+      setLoadingProjects(false);
     }
   };
 
-  // 2. ADD NEW FILE TO LOCAL TREE
-  const handleAddFile = () => {
-    if (!newFilePath.trim()) return;
-    const path = newFilePath.trim();
-    if (files[path]) {
-      Alert.alert('Error', 'File already exists.');
-      return;
-    }
-    setFiles({ ...files, [path]: '// New file content' });
-    setActiveFilePath(path);
-    setNewFilePath('');
+  // Delete a Repository from GitHub
+  const deleteRepository = (repoFullName) => {
+    Alert.alert(
+      'Delete Repository',
+      `Are you sure you want to permanently delete ${repoFullName} from GitHub?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const response = await fetch(`https://api.github.com/repos/${repoFullName}`, {
+                method: 'DELETE',
+                headers: {
+                  Authorization: `token ${githubToken}`,
+                  Accept: 'application/vnd.github.v3+json',
+                },
+              });
+              if (response.status === 204) {
+                Alert.alert('Success', 'Repository deleted successfully.');
+                setProjects(projects.filter((p) => p.full_name !== repoFullName));
+              } else {
+                const data = await response.json();
+                Alert.alert('Delete Failed', data.message || 'Unable to delete repo.');
+              }
+            } catch (err) {
+              Alert.alert('Error', err.message);
+            }
+          },
+        },
+      ]
+    );
   };
 
-  // 3. BATCH COMMIT ALL FILES TO GITHUB
-  const handleBatchPush = async () => {
-    if (!activeRepo) {
-      Alert.alert('Error', 'No active project repo selected.');
+  // Fetch File Content from GitHub
+  const fetchFileContent = async () => {
+    if (!selectedRepo || !filePath) {
+      Alert.alert('Input Required', 'Please specify both Repository and File Path.');
       return;
     }
-
-    setLoading(true);
-    setStatusText(`Committing project files to ${activeRepo}...`);
-
+    setIsSaving(true);
     try {
-      const authHeader = { Authorization: `token ${githubToken.trim()}` };
-
-      // Step A: Get latest commit on main
-      const refRes = await fetch(
-        `https://api.github.com/repos/${GITHUB_USERNAME}/${activeRepo}/git/ref/heads/main`,
-        { headers: authHeader }
+      const response = await fetch(
+        `https://api.github.com/repos/${selectedRepo}/contents/${filePath}`,
+        {
+          headers: {
+            Authorization: `token ${githubToken}`,
+            Accept: 'application/vnd.github.v3+json',
+          },
+        }
       );
-      const refData = await refRes.json();
-      const latestCommitSha = refData.object.sha;
-
-      // Step B: Get Tree SHA from latest commit
-      const commitRes = await fetch(
-        `https://api.github.com/repos/${GITHUB_USERNAME}/${activeRepo}/git/commits/${latestCommitSha}`,
-        { headers: authHeader }
-      );
-      const commitData = await commitRes.json();
-      const baseTreeSha = commitData.tree.sha;
-
-      // Step C: Create blobs for each file
-      const treeItems = [];
-      for (const [path, content] of Object.entries(files)) {
-        const blobRes = await fetch(
-          `https://api.github.com/repos/${GITHUB_USERNAME}/${activeRepo}/git/blobs`,
-          {
-            method: 'POST',
-            headers: authHeader,
-            body: JSON.stringify({ content, encoding: 'utf-8' }),
-          }
+      const data = await response.json();
+      if (data.content) {
+        // Decode base64 UTF-8 string content
+        const decoded = decodeURIComponent(
+          escape(atob(data.content.replace(/\s/g, '')))
         );
-        const blobData = await blobRes.json();
-        treeItems.push({
-          path,
-          mode: '100644',
-          type: 'blob',
-          sha: blobData.sha,
-        });
+        setFileContent(decoded);
+        setFileSha(data.sha);
+      } else {
+        Alert.alert('File Not Found', 'File does not exist at path or is empty. Ready for new file creation.');
+        setFileContent('');
+        setFileSha('');
       }
-
-      // Step D: Create a new Tree
-      const newTreeRes = await fetch(
-        `https://api.github.com/repos/${GITHUB_USERNAME}/${activeRepo}/git/trees`,
-        {
-          method: 'POST',
-          headers: authHeader,
-          body: JSON.stringify({ base_tree: baseTreeSha, tree: treeItems }),
-        }
-      );
-      const newTreeData = await newTreeRes.json();
-
-      // Step E: Create new Commit
-      const newCommitRes = await fetch(
-        `https://api.github.com/repos/${GITHUB_USERNAME}/${activeRepo}/git/commits`,
-        {
-          method: 'POST',
-          headers: authHeader,
-          body: JSON.stringify({
-            message: 'Multi-file update via Mobile Meta Hub IDE',
-            tree: newTreeData.sha,
-            parents: [latestCommitSha],
-          }),
-        }
-      );
-      const newCommitData = await newCommitRes.json();
-
-      // Step F: Update HEAD
-      await fetch(
-        `https://api.github.com/repos/${GITHUB_USERNAME}/${activeRepo}/git/refs/heads/main`,
-        {
-          method: 'PATCH',
-          headers: authHeader,
-          body: JSON.stringify({ sha: newCommitData.sha }),
-        }
-      );
-
-      Alert.alert('Pushed!', `All files committed to ${activeRepo}. APK compilation started!`);
-    } catch (err) {
-      Alert.alert('Commit Error', err.message);
+    } catch (error) {
+      Alert.alert('Error Loading File', error.message);
     } finally {
-      setLoading(false);
-      setStatusText('');
+      setIsSaving(false);
     }
   };
+
+  // Create or Update File on GitHub
+  const saveFileToGithub = async () => {
+    if (!selectedRepo || !filePath) {
+      Alert.alert('Error', 'Please specify Target Repository and File Path.');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      // Encode UTF-8 string to base64
+      const encoded = btoa(unescape(encodeURIComponent(fileContent)));
+      const payload = {
+        message: `mobile-meta-hub: update ${filePath}`,
+        content: encoded,
+        ...(fileSha ? { sha: fileSha } : {}),
+      };
+
+      const response = await fetch(
+        `https://api.github.com/repos/${selectedRepo}/contents/${filePath}`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `token ${githubToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/vnd.github.v3+json',
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+      const data = await response.json();
+      if (response.status === 200 || response.status === 201) {
+        Alert.alert('Saved', 'File committed to GitHub successfully!');
+        setFileSha(data.content.sha);
+      } else {
+        Alert.alert('Save Failed', data.message || 'Failed to save file.');
+      }
+    } catch (err) {
+      Alert.alert('Error Saving', err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Delete a File from GitHub
+  const deleteFileFromGithub = async () => {
+    if (!selectedRepo || !filePath || !fileSha) {
+      Alert.alert('Error', 'Load a valid existing file first to delete it.');
+      return;
+    }
+    Alert.alert('Delete File', `Delete ${filePath} from ${selectedRepo}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete File',
+        style: 'destructive',
+        onPress: async () => {
+          setIsSaving(true);
+          try {
+            const payload = {
+              message: `mobile-meta-hub: delete ${filePath}`,
+              sha: fileSha,
+            };
+            const response = await fetch(
+              `https://api.github.com/repos/${selectedRepo}/contents/${filePath}`,
+              {
+                method: 'DELETE',
+                headers: {
+                  Authorization: `token ${githubToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+              }
+            );
+            if (response.status === 200) {
+              Alert.alert('Deleted', 'File removed from repository.');
+              setFileContent('');
+              setFileSha('');
+            } else {
+              const data = await response.json();
+              Alert.alert('Delete Failed', data.message || 'Could not delete file.');
+            }
+          } catch (err) {
+            Alert.alert('Error', err.message);
+          } finally {
+            setIsSaving(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  // --- RENDER TAB CONTENTS ---
+
+  const renderProjectsTab = () => (
+    <View style={styles.tabContainer}>
+      <TouchableOpacity style={styles.primaryBtn} onPress={fetchUserRepos}>
+        <Text style={styles.primaryBtnText}>Sync GitHub Repositories</Text>
+      </TouchableOpacity>
+
+      {loadingProjects ? (
+        <ActivityIndicator size="large" color="#38BDF8" style={{ marginTop: 20 }} />
+      ) : (
+        <FlatList
+          data={projects}
+          keyExtractor={(item) => item.id.toString()}
+          style={{ marginTop: 12 }}
+          renderItem={({ item }) => (
+            <View style={styles.projectCard}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.projectTitle}>{item.name}</Text>
+                <Text style={styles.projectSub}>{item.full_name}</Text>
+              </View>
+              <View style={styles.cardActions}>
+                <TouchableOpacity
+                  style={styles.editCardBtn}
+                  onPress={() => {
+                    setSelectedRepo(item.full_name);
+                    setActiveTab('editor');
+                  }}
+                >
+                  <Text style={styles.editCardText}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.deleteCardBtn}
+                  onPress={() => deleteRepository(item.full_name)}
+                >
+                  <Text style={styles.deleteCardText}>Delete</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        />
+      )}
+    </View>
+  );
+
+  const renderEditorTab = () => (
+    <ScrollView style={styles.tabContainer}>
+      <Text style={styles.label}>Target Repository (owner/repo)</Text>
+      <TextInput
+        style={styles.input}
+        value={selectedRepo}
+        onChangeText={setSelectedRepo}
+        placeholder="e.g. username/CryptoHub"
+        placeholderTextColor="#64748B"
+      />
+
+      <Text style={styles.label}>File Path</Text>
+      <TextInput
+        style={styles.input}
+        value={filePath}
+        onChangeText={setFilePath}
+        placeholder="e.g. App.js or src/utils/api.js"
+        placeholderTextColor="#64748B"
+      />
+
+      <TouchableOpacity style={styles.secondaryBtn} onPress={fetchFileContent}>
+        <Text style={styles.secondaryBtnText}>Load File Content</Text>
+      </TouchableOpacity>
+
+      <Text style={[styles.label, { marginTop: 16 }]}>Code Editor</Text>
+      <TextInput
+        style={[styles.input, styles.codeEditor]}
+        value={fileContent}
+        onChangeText={setFileContent}
+        multiline
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder="// Code goes here..."
+        placeholderTextColor="#64748B"
+      />
+
+      <View style={styles.editorActionRow}>
+        <TouchableOpacity
+          style={[styles.primaryBtn, { flex: 1, marginRight: 8 }]}
+          onPress={saveFileToGithub}
+          disabled={isSaving}
+        >
+          <Text style={styles.primaryBtnText}>
+            {isSaving ? 'Saving...' : 'Save / Commit'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.deleteCardBtn, { paddingVertical: 12, paddingHorizontal: 16 }]}
+          onPress={deleteFileFromGithub}
+          disabled={isSaving}
+        >
+          <Text style={styles.deleteCardText}>Delete File</Text>
+        </TouchableOpacity>
+      </View>
+    </ScrollView>
+  );
+
+  const renderSettingsTab = () => (
+    <View style={styles.tabContainer}>
+      <Text style={styles.label}>Personal Access Token (PAT)</Text>
+      <TextInput
+        style={styles.input}
+        value={githubToken}
+        onChangeText={setGithubToken}
+        secureTextEntry
+        placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+        placeholderTextColor="#64748B"
+      />
+
+      <Text style={styles.label}>Template Repository</Text>
+      <TextInput
+        style={styles.input}
+        value={templateRepo}
+        onChangeText={setTemplateRepo}
+        placeholder="username/mobile-meta-hub-template"
+        placeholderTextColor="#64748B"
+      />
+
+      <TouchableOpacity
+        style={styles.primaryBtn}
+        onPress={() => Alert.alert('Saved', 'Configuration retained in state.')}
+      >
+        <Text style={styles.primaryBtnText}>Save Configuration</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.title}>Mobile Meta Hub Multi-File IDE</Text>
+      <Text style={styles.appTitle}>Mobile Meta Hub Controller</Text>
 
-        <View style={styles.card}>
-          <Text style={styles.label}>GitHub Access Token:</Text>
-          <TextInput
-            style={styles.input}
-            secureTextEntry
-            placeholder="ghp_xxx"
-            value={githubToken}
-            onChangeText={setGithubToken}
-          />
-        </View>
+      {/* Tab Navigation */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'projects' && styles.activeTab]}
+          onPress={() => setActiveTab('projects')}
+        >
+          <Text style={[styles.tabText, activeTab === 'projects' && styles.activeTabText]}>
+            Projects
+          </Text>
+        </TouchableOpacity>
 
-        <View style={styles.card}>
-          <Text style={styles.label}>1. Project Repository:</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. MyComplexApp"
-            value={newRepoName}
-            onChangeText={setNewRepoName}
-          />
-          <TouchableOpacity style={styles.btnPrimary} onPress={handleCreateNewProject}>
-            <Text style={styles.btnText}>Create Project Repo</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'editor' && styles.activeTab]}
+          onPress={() => setActiveTab('editor')}
+        >
+          <Text style={[styles.tabText, activeTab === 'editor' && styles.activeTabText]}>
+            Editor
+          </Text>
+        </TouchableOpacity>
 
-        {/* FILE MANAGER SECTION */}
-        <View style={styles.card}>
-          <Text style={styles.label}>2. File Manager:</Text>
-          
-          <ScrollView horizontal style={styles.fileTabs}>
-            {Object.keys(files).map((path) => (
-              <TouchableOpacity
-                key={path}
-                style={[styles.tab, activeFilePath === path && styles.tabActive]}
-                onPress={() => setActiveFilePath(path)}>
-                <Text style={[styles.tabText, activeFilePath === path && styles.tabTextActive]}>
-                  {path}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'settings' && styles.activeTab]}
+          onPress={() => setActiveTab('settings')}
+        >
+          <Text style={[styles.tabText, activeTab === 'settings' && styles.activeTabText]}>
+            Settings
+          </Text>
+        </TouchableOpacity>
+      </View>
 
-          <View style={styles.row}>
-            <TextInput
-              style={[styles.input, { flex: 1, marginBottom: 0 }]}
-              placeholder="e.g. src/components/Header.js"
-              value={newFilePath}
-              onChangeText={setNewFilePath}
-            />
-            <TouchableOpacity style={styles.btnSecondary} onPress={handleAddFile}>
-              <Text style={styles.btnText}>+ Add File</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* EDITOR SECTION */}
-        <View style={styles.card}>
-          <Text style={styles.label}>Editing: {activeFilePath}</Text>
-          <TextInput
-            style={styles.codeArea}
-            multiline
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={files[activeFilePath] || ''}
-            onChangeText={(text) => setFiles({ ...files, [activeFilePath]: text })}
-          />
-          <TouchableOpacity style={styles.btnSuccess} onPress={handleBatchPush}>
-            <Text style={styles.btnText}>Save, Push All Files & Build APK</Text>
-          </TouchableOpacity>
-        </View>
-
-        {loading && (
-          <View style={styles.loading}>
-            <ActivityIndicator size="large" color="#0052CC" />
-            <Text style={styles.loadingText}>{statusText}</Text>
-          </View>
-        )}
-      </ScrollView>
+      {/* Active Tab Content */}
+      <View style={{ flex: 1 }}>
+        {activeTab === 'projects' && renderProjectsTab()}
+        {activeTab === 'editor' && renderEditorTab()}
+        {activeTab === 'settings' && renderSettingsTab()}
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F4F5F7' },
-  scroll: { padding: 16 },
-  title: { fontSize: 22, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' },
-  card: { backgroundColor: '#FFF', borderRadius: 8, padding: 16, marginBottom: 16 },
-  label: { fontWeight: 'bold', marginBottom: 8 },
-  input: { borderWidth: 1, borderColor: '#CCC', borderRadius: 6, padding: 8, marginBottom: 12 },
-  fileTabs: { flexDirection: 'row', marginBottom: 12 },
-  tab: { padding: 8, borderBottomWidth: 2, borderBottomColor: 'transparent', marginRight: 8 },
-  tabActive: { borderBottomColor: '#0052CC' },
-  tabText: { color: '#666' },
-  tabTextActive: { color: '#0052CC', fontWeight: 'bold' },
-  row: { flexDirection: 'row', gap: 8 },
-  codeArea: { backgroundColor: '#1E1E1E', color: '#00FF66', fontFamily: 'monospace', height: 260, borderRadius: 6, padding: 10, textAlignVertical: 'top', marginBottom: 12 },
-  btnPrimary: { backgroundColor: '#0052CC', padding: 12, borderRadius: 6, alignItems: 'center' },
-  btnSecondary: { backgroundColor: '#4C9AFF', padding: 12, borderRadius: 6, justifyContent: 'center' },
-  btnSuccess: { backgroundColor: '#36B37E', padding: 12, borderRadius: 6, alignItems: 'center' },
-  btnText: { color: '#FFF', fontWeight: 'bold' },
-  loading: { alignItems: 'center', marginVertical: 12 },
-  loadingText: { marginTop: 6, color: '#0052CC' }
+  container: { flex: 1, backgroundColor: '#0F172A' },
+  appTitle: { fontSize: 20, fontWeight: 'bold', color: '#F8FAFC', padding: 16, textAlign: 'center' },
+  tabBar: { flexDirection: 'row', backgroundColor: '#1E293B', marginHorizontal: 12, borderRadius: 8, padding: 4 },
+  tabItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6 },
+  activeTab: { backgroundColor: '#38BDF8' },
+  tabText: { color: '#94A3B8', fontWeight: 'bold', fontSize: 13 },
+  activeTabText: { color: '#0F172A' },
+  tabContainer: { flex: 1, padding: 16 },
+  label: { color: '#94A3B8', fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
+  input: {
+    backgroundColor: '#1E293B',
+    color: '#F8FAFC',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  codeEditor: { height: 240, fontFamily: 'monospace', textAlignVertical: 'top' },
+  primaryBtn: { backgroundColor: '#38BDF8', padding: 14, borderRadius: 8, alignItems: 'center' },
+  primaryBtnText: { color: '#0F172A', fontWeight: 'bold', fontSize: 14 },
+  secondaryBtn: { backgroundColor: '#334155', padding: 12, borderRadius: 8, alignItems: 'center' },
+  secondaryBtnText: { color: '#F8FAFC', fontWeight: '600' },
+  projectCard: {
+    backgroundColor: '#1E293B',
+    padding: 14,
+    borderRadius: 8,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  projectTitle: { color: '#F8FAFC', fontWeight: 'bold', fontSize: 15 },
+  projectSub: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
+  cardActions: { flexDirection: 'row', gap: 6 },
+  editCardBtn: { backgroundColor: '#0284C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4 },
+  editCardText: { color: '#FFFFFF', fontSize: 12, fontWeight: 'bold' },
+  deleteCardBtn: { backgroundColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4 },
+  deleteCardText: { color: '#FFFFFF', fontSize: 12, fontWeight: 'bold' },
+  editorActionRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12 },
 });
